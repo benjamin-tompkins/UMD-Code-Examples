@@ -1,0 +1,836 @@
+#!/usr/bin/env python3
+import socket
+import hashlib
+import argparse
+import threading
+import sys
+import time
+import struct
+import json
+import os
+
+
+class Node:
+    def __init__(self, addr, port):
+        self.id = hashlib.sha1((addr + str(port)).encode('utf-8')).hexdigest()
+        self.addr = addr
+        self.port = port
+        self.pred = None
+        self.succ = [None] * r
+        self.finger = [None] * 160
+
+    def create(self):
+        for i in range(0, r):
+            self.succ[i] = self
+        for i in range(0, 160):
+            self.finger[i] = self
+
+    def join(self, jaddr, jport):
+        self.pred = None
+        s = socket.socket()
+        try:
+            s.connect((jaddr, jport))
+
+            type = 6
+            s.sendall(type.to_bytes(4, 'big'))
+           #("join send0 type " + str(type))
+            ack = bytearray()
+            e = 0
+            while len(ack) < 4:
+                if e > 100:
+                    raise Exception
+                packet = s.recv(4 - len(ack))
+                ack.extend(packet)
+                e += 1
+            #print("join recv0 ack " + str(ack))
+
+            mess = {'id': self.id}
+            serialized = json.dumps(mess)
+
+            size = len(serialized)
+            s.sendall(size.to_bytes(4, 'big'))
+            #print("join send1 size " + str(size))
+
+            s.sendall(serialized.encode('utf-8'))
+            #print("join send2 mess " + str(json.dumps(mess)))
+
+            size = bytearray()
+            e = 0
+            while len(size) < 4:
+                if e > 100:
+                    raise Exception
+                packet = s.recv(4 - len(size))
+                size.extend(packet)
+                e += 1
+            size = int.from_bytes(size, 'big')
+            #print("join recv1 size" + str(size))
+
+            data = bytearray()
+            e = 0
+            while len(data) < size:
+                if e > 100:
+                    raise Exception
+                packet = s.recv(size - len(data))
+                data.extend(packet)
+                e += 1
+            mess = json.loads(data.decode('utf-8'))
+            #print("join recv1 mess " + str(mess))
+            s.close()
+            #print("finijshing join succ[0] ip and port" + '.'.join([str(mess['address'] >> (i << 3) & 0xFF) for i in range(4)[::-1]]) + " " + str(mess['port']))
+            self.succ[0] = Node('.'.join([str(mess['address'] >> (i << 3) & 0xFF) for i in range(4)[::-1]]), mess['port'])
+
+        except:# socket.timeout or IOError or BrokenPipeError or ConnectionRefusedError or ConnectionResetError:
+            #print("here")
+            s.close()
+
+    def find_successor(self, id):
+        #print(str(self.succ[0]) + " " + str(self.id == self.succ[0].id) + " " + self.id + " " + self.succ[0].id + str(int(self.id, 16) == int(self.succ[0].id, 16)))
+        if self.succ[0] is not None and self.id == self.succ[0].id:
+            #print("here")
+            return self
+        elif int(self.id, 16) < int(id, 16) <= int(self.succ[0].id, 16):
+            return self.succ[0]
+        else:
+            prime = self.closest_preceding_node(id)
+            #print(prime.id)
+            if int(prime.id, 16) == int(self.id, 16):
+                #print(id, self.id, self.succ[0].id, self.pred)
+                if int(id, 16) > int(self.id, 16) > int(self.succ[0].id, 16):
+                    return self.succ[0]
+                elif self.pred is not None and int(self.pred.id, 16) > int(self.id, 16) > int(id, 16):
+                    return self
+                elif self.pred is not None:
+                    prime = self.pred
+                else:
+                    return self
+            s = socket.socket()
+            try:
+                s.connect((prime.addr, prime.port))
+
+                type = 2
+                s.sendall(type.to_bytes(4, 'big'))
+                #print("find send0 type " + str(type))
+
+                ack = bytearray()
+                e = 0
+                while len(ack) < 4:
+                    if e > 100:
+                        raise Exception
+                    packet = s.recv(4 - len(ack))
+                    ack.extend(packet)
+                    e += 1
+                #print("find recv0 ack " + str(ack))
+
+                mess = {'id': id}
+                serialized = json.dumps(mess)
+
+                size = len(serialized)
+                s.sendall(size.to_bytes(4, 'big'))
+                #print("find send1 size of findsuccarg " + str(size))
+
+                s.sendall(serialized.encode('utf-8'))
+                #print("find send2 mess find succarg " + str(mess.SerializeToString()))
+
+
+                size = bytearray()
+                e = 0
+                while len(size) < 4:
+                    if e > 100:
+                        raise Exception
+                    packet = s.recv(4 - len(size))
+                    size.extend(packet)
+                    e += 1
+                size = int.from_bytes(size, 'big')
+                #print("find recv1 size findsuccret " + str(size))
+
+                data = bytearray()
+                e = 0
+                while len(data) < size:
+                    if e > 100:
+                        raise Exception
+                    packet = s.recv(size - len(data))
+                    data.extend(packet)
+                    e += 1
+                mess = json.loads(data.decode('utf-8'))
+                #print("find recv2 mess find succ ret " + '.'.join([str(mess.node.address >> (i << 3) & 0xFF) for i in range(4)[::-1]]) + " " + str(mess.node.port))
+
+
+                s.close()
+                return Node('.'.join([str(mess['address'] >> (i << 3) & 0xFF) for i in range(4)[::-1]]), mess['port'])
+
+            except:# socket.timeout or IOError or BrokenPipeError or ConnectionRefusedError or ConnectionResetError:
+                #print("find err")
+                for i in range(0, 160):
+                    if self.finger[i] is not None:
+                        if int(self.finger[i].id, 16) == int(prime.id, 16):
+                            self.finger[i] = None
+                for i in range(0, r):
+                    if self.succ[i] is not None:
+                        if int(self.succ[i].id, 16) == int(prime.id, 16):
+                            j = i
+                            while j < r - 1 and self.succ[j] is not None:
+                                self.succ[j] = self.succ[j+1]
+                                j += 1
+                            self.succ[j] = None
+                if self.succ[0] is None:
+                    self.succ[0] = self
+                self.find_successor(id)
+
+    def closest_preceding_node(self, id):
+        best_finger = None
+        best_succ = None
+        for i in range(159, -1, -1):
+            if self.finger[i] is not None and int(self.id, 16) < int(self.finger[i].id, 16) < int(id, 16):
+                #print("from finger")
+                best_finger = self.finger[i]
+                break
+        for i in range(r - 1, -1, -1):
+            #print(str(int(self.id, 16)) + " " + str(int(self.succ[i].id, 16)) + " " + str(int(id, 16)))
+            if self.succ[i] is not None and int(self.id, 16) < int(self.succ[i].id, 16) < int(id, 16):
+                #print("from succ")
+                best_succ = self.succ[i]
+                break
+        if best_finger is not None and best_succ is not None:
+            if best_finger.id > best_succ.id:
+                return best_finger
+            else:
+                return best_succ
+        if best_finger is not None:
+            return best_finger
+        elif best_succ is not None:
+            return best_succ
+        else:
+            #print("just self")
+            return self
+
+    def stabalize(self):
+        #print("stabalizing")
+        s = socket.socket()
+        try:
+            #print(self.succ[0].port)
+            s.connect((self.succ[0].addr, self.succ[0].port))
+
+
+            type = 3                                #Getting successor's predecessor
+            s.sendall(type.to_bytes(4, 'big'))
+            #print("stab send0 type " + str(type))
+            ack = bytearray()
+            e = 0
+            while len(ack) < 4:
+                if e > 100:
+                    raise Exception
+                packet = s.recv(4 - len(ack))
+                ack.extend(packet)
+                e += 1
+            #print("stab recv0 ack " + str(ack))
+
+            mess = {}
+            serialized = json.dumps(mess)
+
+            size = len(serialized)
+            s.sendall(size.to_bytes(4, 'big'))
+            #print("stab send1 size " + str(size))
+
+            s.sendall(serialized.encode('utf-8'))
+
+
+            size = bytearray()
+            e = 0
+            while len(size) < 4:
+                if e > 100:
+                    raise Exception
+                packet = s.recv(4 - len(size))
+                size.extend(packet)
+                e += 1
+            size = int.from_bytes(size, 'big')
+            #print("stab recv1 size" + str(size))
+            if size != 0:
+                #print("they have a pred")
+                data = bytearray()
+                e = 0
+                while len(data) < size:
+                    if e > 100:
+                        raise Exception
+                    packet = s.recv(size - len(data))
+                    data.extend(packet)
+                    e += 1
+                mess = json.loads(data.decode('utf-8'))
+                #print("stab recv2 mess")
+                x = Node('.'.join([str(mess['address'] >> (i << 3) & 0xFF) for i in range(4)[::-1]]), mess['port'])
+                #print(self.id + " < " + x.id + " < " + self.succ[0].id)
+                if int(self.id, 16) < int(x.id, 16) < int(self.succ[0].id, 16) or int(self.id, 16) == int(self.succ[0].id, 16) or int(n.id, 16) > int(self.succ[0].id, 16) > int(x.id, 16) or int(x.id, 16) > int(n.id, 16) > int(self.succ[0].id, 16):
+                    #print("before " + str(self.succ[0].id))
+                    self.succ[0] = x
+                    #print(self.succ[0].id)
+
+            s.close()
+            #print("done getting successors pred " + str(self.succ[0].id))
+
+            #successor.notify(n);
+            s = socket.socket()
+            try:
+                s.connect((self.succ[0].addr, self.succ[0].port))
+                #print("Sending to " + str(self.succ[0].port))
+
+                type = 4                            #Notifing and getting succlist
+                s.sendall(type.to_bytes(4, 'big'))
+                #print("stab send3 type " + str(type))
+                ack = bytearray()
+                e = 0
+                while len(ack) < 4:
+                    if e > 100:
+                        raise Exception
+                    packet = s.recv(4 - len(ack))
+                    ack.extend(packet)
+                    e += 1
+                #print("stab recv3 ack " + str(ack))
+                arr = self.addr.split('.')
+                mess = {
+                    'id': self.id,
+                    'address': (int(arr[0]) << 24) + (int(arr[1]) << 16) + (int(arr[2]) << 8) + int(arr[3]),
+                    'port': self.port
+
+                }
+
+                serialized = json.dumps(mess)
+                size = len(serialized)
+                size2 = len(serialized.encode('utf-8'))
+                s.sendall(size.to_bytes(4, 'big'))
+                #print("stab send4 size " + str(size) + " " + str(size2))
+
+                s.sendall(serialized.encode('utf-8'))
+
+                size = bytearray()
+                e = 0
+                while len(size) < 4:
+                    if e > 100:
+                        raise Exception
+                    packet = s.recv(4 - len(size))
+                    size.extend(packet)
+                    e += 1
+                size = int.from_bytes(size, 'big')
+                #print("stab recv4 size" + str(size))
+
+                data = bytearray()
+                e = 0
+                while len(data) < size:
+                    if e > 100:
+                        raise Exception
+                    packet = s.recv(size - len(data))
+                    data.extend(packet)
+                    e += 1
+                mess = json.loads(data.decode('utf-8'))
+                #print("stab recv5 mess NotifyRet")
+
+                mess = {
+                    'id': self.id
+                }
+
+                serialized = json.dumps(mess)
+                size = len(serialized)
+                s.sendall(size.to_bytes(4, 'big'))
+                #print("stab send6 size " + str(size))
+
+                count = bytearray()
+                e = 0
+                while len(count) < 4:
+                    if e > 100:
+                        raise Exception
+                    packet = s.recv(4 - len(count))
+                    count.extend(packet)
+                    e += 1
+                count = int.from_bytes(count, 'big')
+                #print("stab recv6 count " + str(count))
+
+                s.sendall(serialized.encode('utf-8'))
+
+                size = bytearray()
+                e = 0
+                while len(size) < 4:
+                    if e > 100:
+                        raise Exception
+                    packet = s.recv(4 - len(size))
+                    size.extend(packet)
+                    e += 1
+                size = int.from_bytes(size, 'big')
+                #print("stab recv7 size" + str(size))
+
+                data = bytearray()
+                e = 0
+                while len(data) < size:
+                    if e > 100:
+                        raise Exception
+                    packet = s.recv(size - len(data))
+                    data.extend(packet)
+                    e += 1
+                mess = json.loads(data.decode('utf-8'))
+                #print("stab recv8 mess")
+
+                for i in range(0, count):
+                    newNode = Node(socket.inet_ntoa(struct.pack('!L', mess['successors'][i]['address'])), mess['successors'][i]['port'])
+                    #newNode.pred = self.succ[i - 1]
+                    self.succ[i + 1] = newNode
+
+                s.close()
+            except:# socket.timeout or IOError or BrokenPipeError or ConnectionRefusedError or ConnectionResetError:
+                print("stab1")
+                s.close()
+                for i in range(0, 160):
+                    if self.finger[i] is not None:
+                        if int(self.finger[i].id, 16) == int(self.succ[0].id, 16):
+                            self.finger[i] = None
+                for i in range(0, r):
+                    if self.succ[i] is not None:
+                        if int(self.succ[i].id, 16) == int(self.succ[0].id, 16):
+                            j = i
+                            while j < r - 1 and self.succ[j] is not None:
+                                self.succ[j] = self.succ[j+1]
+                                j += 1
+                            self.succ[j] = None
+                if self.succ[0] is None:
+                    self.succ[0] = self
+                self.stabalize()
+
+        except:# socket.timeout or IOError or BrokenPipeError or ConnectionRefusedError or ConnectionResetError:
+            print("stab2")
+            s.close()
+            for i in range(0, 160):
+                if self.finger[i] is not None:
+                    if int(self.finger[i].id, 16) == int(self.succ[0].id, 16):
+                        self.finger[i] = None
+            for i in range(0, r):
+                if self.succ[i] is not None:
+                    if int(self.succ[i].id, 16) == int(self.succ[0].id, 16):
+                        j = i
+                        while j < r - 1 and self.succ[j] is not None:
+                            self.succ[j] = self.succ[j+1]
+                            j += 1
+                        self.succ[j] = None
+            if self.succ[0] is None:
+                self.succ[0] = self
+            self.stabalize()
+
+    def fix_fingers(self):
+        #print("Fix fingers")
+        for i in range(0, 160):
+            #print(str(i) + " " + str(hex((int(self.id, 16) + 2 ** i) % (2 ** 160))))
+            self.finger[i] = self.find_successor(hex((int(self.id, 16) + 2 ** i) % (2 ** 160)))
+
+    def check_predecessor(self):
+        #print("check pred")
+        if self.pred is not None:
+            #print(self.pred.id)
+            s = socket.socket()
+            try:
+                s.connect((self.pred.addr, self.pred.port))
+                type = 5  # Check Pred
+                s.sendall(type.to_bytes(4, 'big'))
+                #print("stab send0 type " + str(type))
+                ack = bytearray()
+                e = 0
+                while len(ack) < 4:
+                    if e > 100:
+                        raise Exception
+                    packet = s.recv(4 - len(ack))
+                    ack.extend(packet)
+                    e += 1
+                #print("stab recv0 ack " + str(ack))
+                s.close()
+
+            except:# socket.timeout, IOError, BrokenPipeError, ConnectionRefusedError, ConnectionResetError:
+                print("check pred err ")
+                for i in range(0, 160):
+                    if self.finger[i] is not None:
+                        if int(self.finger[i].id, 16) == int(self.pred.id, 16):
+                            self.finger[i] = None
+                for i in range(0, r):
+                    if self.succ[i] is not None:
+                        if int(self.succ[i].id, 16) == int(self.pred.id, 16):
+                            j = i
+                            while j < r - 1 and self.succ[j] is not None:
+                                self.succ[j] = self.succ[j+1]
+                                j += 1
+                            self.succ[j] = None
+                if self.succ[0] is None:
+                    self.succ[0] = self
+                s.close()
+                self.pred = None
+
+
+def tcp_thread(nprime, clntSock):
+    try:
+        type = bytearray()
+        e = 0
+        while len(type) < 4:
+            if e > 100:
+                raise Exception
+            packet = clntSock.recv(4 - len(type))
+            type.extend(packet)
+            e += 1
+        #print("tcp recv0 typ: " + str(type))
+        type = int.from_bytes(type, 'big')
+        if type == 2:                       #Find succ
+
+            ack = 1
+            clntSock.sendall(ack.to_bytes(4, 'big'))
+
+
+            size = bytearray()
+            e = 0
+            while len(size) < 4:
+                if e > 100:
+                    raise Exception
+                packet = clntSock.recv(4 - len(size))
+                size.extend(packet)
+                e += 1
+            size = int.from_bytes(size, 'big')
+            #print("tcp2 recv size " + str(size))
+
+            data = bytearray()
+            e = 0
+            while len(data) < size:
+                if e > 100:
+                    raise Exception
+                packet = clntSock.recv(size - len(data))
+                data.extend(packet)
+                e += 1
+            mess = json.loads(data.decode('utf-8'))
+            #print("tcp2 recv mess " + str(mess['id']))
+
+            n2 = n.find_successor(mess['id'])
+            #print(str(mess.id) + " " + str(n2.id))
+
+            arr = n2.addr.split('.')
+            mess = {
+                'id': n2.id,
+                'address': (int(arr[0]) << 24) + (int(arr[1]) << 16) + (int(arr[2]) << 8) + int(arr[3]),
+                'port': n2.port
+
+            }
+            serialized = json.dumps(mess)
+
+            #print("tcp2 sending mess size" + str(len(mess.SerializeToString())))
+            size = len(serialized)
+            clntSock.sendall(size.to_bytes(4, 'big'))
+
+            clntSock.sendall(serialized.encode('utf-8'))
+            #print("tcp2 sending mess")
+
+        if type == 3:  # Find succ's pred
+
+            ack = 1
+            clntSock.sendall(ack.to_bytes(4, 'big'))
+            #print("tcp3 send0 acc: " + str(ack))
+
+            size = bytearray()
+            e = 0
+            while len(size) < 4:
+                if e > 100:
+                    raise Exception
+                packet = clntSock.recv(4 - len(size))
+                size.extend(packet)
+                e += 1
+            size = int.from_bytes(size, 'big')
+            #print("tcp3 recv1 size " + str(size))
+
+            data = bytearray()
+            e = 0
+            while len(data) < size:
+                if e > 100:
+                    raise Exception
+                packet = clntSock.recv(size - len(data))
+                data.extend(packet)
+                e += 1
+                #print(len(data))
+            mess = json.loads(data.decode('utf-8'))
+            #print("tcp3 recv2 mess " + str(mess))
+
+            n2 = n.pred
+
+            if n2 is not None:
+                #print("predexesor is " + str(n2.id))
+                arr = n2.addr.split('.')
+                mess = {
+                    'id': n2.id,
+                    'address': (int(arr[0]) << 24) + (int(arr[1]) << 16) + (int(arr[2]) << 8) + int(arr[3]),
+                    'port': n2.port
+                }
+
+                serialized = json.dumps(mess)
+
+                size = len(serialized)
+                clntSock.sendall(size.to_bytes(4, 'big'))
+                #print("tcp3 send1 size" + str(len(mess.SerializeToString())))
+
+                clntSock.sendall(serialized.encode('utf-8'))
+                #print("tcp3 send2 mess " + str(mess))
+            else:
+                #print("dont have a predexesor")
+                size = 0
+                clntSock.sendall(size.to_bytes(4, 'big'))
+                #print("tcp3 send1 acc no pred: " + str(size))
+
+        elif type == 4:           #Stabalize
+
+            ack = 1
+            clntSock.sendall(ack.to_bytes(4, 'big'))
+            #print("tcp4 send0 acc: " + str(ack))
+
+            size = bytearray()
+            e = 0
+            while len(size) < 4:
+                if e > 100:
+                    raise Exception
+                packet = clntSock.recv(4 - len(size))
+                size.extend(packet)
+                e += 1
+            size = int.from_bytes(size, 'big')
+            #print("tcp4 recv1 size " + str(size))
+
+            data = bytearray()
+            e = 0
+            while len(data) < size:
+                if e > 100:
+                    raise Exception
+                packet = clntSock.recv(size - len(data))
+                data.extend(packet)
+                e += 1
+            mess = json.loads(data.decode('utf-8'))
+            #print("tcp4 recv2 mess " + str(mess))
+
+            x = Node('.'.join([str(mess['address'] >> (i << 3) & 0xFF) for i in range(4)[::-1]]), mess['port'])
+
+            if n.pred is None or int(n.pred.id, 16) < int(x.id, 16) < int(n.id, 16) or int(n.pred.id, 16) == int(n.id, 16) or int(n.pred.id, 16) > int(n.id, 16) > int(x.id, 16) or int(n.id, 16) > int(n.pred.id, 16) > int(x.id, 16) or int(x.id, 16) > int(n.pred.id, 16) > int(n.id, 16):   #ISSUE if PRED IS BEFORE 0 but wnats to connect after
+               #("My " + str(n.id) + "Pred set " + str(x.id))
+                n.pred = x
+            #print(str(n.pred))
+            mess = {}
+
+            serialized = json.dumps(mess)
+
+            size = len(serialized)
+            clntSock.sendall(size.to_bytes(4, 'big'))
+            #print("tcp4 send1 size of Notifyagsret " + str(len(mess.SerializeToString())))
+
+            clntSock.sendall(serialized.encode('utf-8'))
+            #print("tcp4 send2 mess " + str(mess))
+
+
+            size = bytearray()
+            e = 0
+            while len(size) < 4:
+                if e > 100:
+                    raise Exception
+                packet = clntSock.recv(4 - len(size))
+                size.extend(packet)
+                e += 1
+            size = int.from_bytes(size, 'big')
+            #print("tcp4 recv3 size of getsucclistarg " + str(size))
+
+            count = 0
+            for i in range(0, r - 1):
+                if n.succ[i] is not None:
+                    count += 1
+            clntSock.sendall(count.to_bytes(4, 'big'))
+            #print("tcp4 send3 count " + str(count))
+
+            data = bytearray()
+            e = 0
+            while len(data) < size:
+                if e > 100:
+                    raise Exception
+                packet = clntSock.recv(size - len(data))
+                data.extend(packet)
+                e += 1
+            mess = json.loads(data.decode('utf-8'))
+            #print("tcp4 recv4 mess get succlist " + str(mess))
+
+            #n2 = n.find_successor(mess.id.decode("utf-8"))
+
+            ret = {
+                'successors': []
+            }
+            for i in range(0, count):
+                arr = nprime.succ[i].addr.split('.')
+                node = {
+                    'id': nprime.succ[i].id,
+                    'address': (int(arr[0]) << 24) + (int(arr[1]) << 16) + (int(arr[2]) << 8) + int(arr[3]),
+                    'port': nprime.succ[i].port
+                }
+                ret['successors'].append(node)
+
+            serialized = json.dumps(ret)
+            size = len(serialized)
+            clntSock.sendall(size.to_bytes(4, 'big'))
+            #print("tcp4 send4 mess getsucclistret size " + str(len(ret.SerializeToString())))
+
+            clntSock.sendall(serialized.encode('utf-8'))
+            #print("tcp4 send5 mess succlistret " + str(ret))
+
+        elif type == 5:           #Check Predecessesor
+            ack = 1
+            clntSock.sendall(ack.to_bytes(4, 'big'))
+            #print("tcp5 send0 acc: " + str(ack))
+        elif type == 6:                       #Find succ for joining user
+            #print("joining")
+            ack = 1
+            clntSock.sendall(ack.to_bytes(4, 'big'))
+            #print("tcp6 send1 ack " + str(ack))
+
+            size = bytearray()
+            e = 0
+            while len(size) < 4:
+                if e > 100:
+                    raise Exception
+                packet = clntSock.recv(4 - len(size))
+                size.extend(packet)
+                e += 1
+            size = int.from_bytes(size, 'big')
+            #print("tcp6 recv size " + str(size))
+
+            data = bytearray()
+            e = 0
+            while len(data) < size:
+                if e > 100:
+                    raise Exception
+                packet = clntSock.recv(size - len(data))
+                data.extend(packet)
+                e += 1
+            mess = json.loads(data.decode('utf-8'))
+            #print("tcp6 recv mess " + str(mess))
+
+            n2 = nprime.find_successor(mess['id'])
+            #print("joins succ[0] : " + str(n2.id))
+
+            arr = n2.addr.split('.')
+            mess = {
+                'id': n2.id,
+                'address': (int(arr[0]) << 24) + (int(arr[1]) << 16) + (int(arr[2]) << 8) + int(arr[3]),
+                'port': n2.port
+            }
+            serialized = json.dumps(mess)
+
+            #print("tcp6 sending mess size" + str(len(serialized)))
+            size = len(serialized)
+            clntSock.sendall(size.to_bytes(4, 'big'))
+
+            clntSock.sendall(serialized.encode('utf-8'))
+            #print("tcp6 sending mess")
+
+        clntSock.close()
+    except:
+        #print("except")
+        clntSock.close()
+
+
+def stdin_thread(nprime):
+    for line in sys.stdin:
+        inp = [elem for elem in line.split()]
+        if inp[0] == "Lookup":
+            h = hashlib.sha1((inp[1]).encode('utf-8')).hexdigest()
+            print(inp[1] + " " + h)
+            node = nprime.find_successor(h)
+            print(node.id + " " + node.addr + " " + str(node.port))
+        elif inp[0] == "PrintState":
+            print("Self " + nprime.id + " " + nprime.addr + " " + str(nprime.port))
+            countsucc = 0
+            countfing = 0
+            #for i in range(0, r):
+                #if nprime.succ[i] is not None:
+                    #countsucc += 1
+            #for i in range(0, 160):
+                #if nprime.finger[i] is not None:
+                    #countfing += 1
+            for i in range(0, r):
+                if nprime.succ[i] is not None:
+                    print("Successor[" + str(i + 1) + "] " + nprime.succ[i].id + " " + nprime.succ[i].addr + " " + str(nprime.succ[i].port))
+                else:
+                    print("Successor[" + str(i + 1) + "] 0000000000000000000000000000000000000000 0.0.0.0 0")
+            for i in range(0, 160):
+                if nprime.finger[i] is not None:
+                    print("Finger[" + str(i + 1) + "] " + nprime.finger[i].id + " " + nprime.finger[i].addr + " " + str(nprime.finger[i].port))
+                else:
+                    print("Finger[" + str(i + 1) + "] 0000000000000000000000000000000000000000 0.0.0.0 0")
+
+
+
+def tstime():
+    tsstart = time.perf_counter()
+    while 1:
+        tscurr = time.perf_counter()
+        if tscurr - tsstart > ts:
+            n.stabalize()
+            tsstart = time.perf_counter()
+
+
+def tfftime():
+    tffstart = time.perf_counter()
+    while 1:
+        tffcurr = time.perf_counter()
+        if tffcurr - tffstart > tff:
+            n.fix_fingers()
+            tffstart = time.perf_counter()
+
+
+def tcptime():
+    tcpstart = time.perf_counter()
+    while 1:
+        tcpcurr = time.perf_counter()
+        if tcpcurr - tcpstart > tcp:
+            n.check_predecessor()
+            tcpstart = time.perf_counter()
+
+
+ap = argparse.ArgumentParser()
+
+# Add the arguments to the parser
+ap.add_argument("-a", dest='addr', required=True)
+ap.add_argument("-p", dest='port', required=True)
+ap.add_argument("--ja", dest='jaddr', required=False)
+ap.add_argument("--jp", dest='jport', required=False)
+ap.add_argument("--ts", dest='ts', required=True)
+ap.add_argument("--tff", dest='tff', required=True)
+ap.add_argument("--tcp", dest='tcp', required=True)
+ap.add_argument("-r", dest='r', required=True)
+
+args = vars(ap.parse_args())
+port = int(args['port'])
+addr = args['addr']
+jaddr = args['jaddr']
+jport = args['jport']
+ts = int(args['ts'])/1000
+tff = int(args['tff'])/1000
+tcp = int(args['tcp'])/1000
+r = int(args['r'])
+
+n = Node(addr, port)
+if jaddr is None and jport is None:
+    n.create()
+else:
+    n.join(jaddr, int(jport))
+
+
+t1 = threading.Thread(target=stdin_thread, args=(n,))
+t3 = threading.Thread(target=tstime, args=())
+t4 = threading.Thread(target=tfftime, args=())
+t5 = threading.Thread(target=tcptime, args=())
+t1.start()
+t3.start()
+t4.start()
+t5.start()
+s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+s.bind((n.addr, n.port))
+s.listen(10)
+threads = []
+while True:
+    clntSock, clntAddr = s.accept()
+    t2 = threading.Thread(target=tcp_thread, args=(n, clntSock,)).start()
+    threads.append(t2)
+
+for t in threads:
+    t.join()
+t1.join()
+t3.join()
+t4.join()
+t5.join()
